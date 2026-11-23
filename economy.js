@@ -1,0 +1,1 @@
+window.FSBN_CATEGORY = window.FSBN_STORIES['economy'];
