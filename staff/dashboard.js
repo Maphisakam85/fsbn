@@ -2,12 +2,12 @@
   'use strict';
   const $ = id => document.getElementById(id);
   let client, role, userId, articles = [], categories = [], authors = [], topics = [], editing = null, dirty = false, busy = false, loadVersion = 0, active = false;
-  let uploaded = null;
+  let uploaded = null, previewUrl = null;
   const form = $('article-form');
   const status = text => { $('article-status').textContent = text; };
   const editorStatus = text => { $('editor-status').textContent = text; };
   const mayEdit = article => role !== 'author' || (article.status === 'draft' && authors.some(a => a.id === article.author_id && a.profile_id === userId));
-  const guard = () => !dirty || window.confirm('Discard unsaved article changes?');
+  const guard = () => !busy && (!dirty || window.confirm('Discard unsaved article changes?'));
   function stop() { active = false; loadVersion++; $('editor').hidden = true; dirty = false; articles = []; $('articles').replaceChildren(); $('overview').textContent = ''; }
   function option(select, value, label) { const el = document.createElement('option'); el.value = value; el.textContent = label; select.append(el); }
   async function load() {
@@ -81,7 +81,7 @@
     const file = form.elements.cover_file.files[0];
     if (file && (!['image/jpeg','image/png','image/webp','image/gif'].includes(file.type) || file.size > 10485760)) { editorStatus('Choose a JPEG, PNG, WebP or GIF image up to 10 MB.'); return; }
     if ((file || editing?.cover_image_id) && !form.elements.image_alt_text.value.trim()) { editorStatus('Add alt text for the cover image.'); form.elements.image_alt_text.focus(); return; }
-    busy = true; $('save-draft').disabled = true; $('publish').disabled = true; editorStatus('Saving article…');
+    busy = true; form.querySelectorAll('input, textarea, select, button').forEach(el => { el.disabled = true; }); editorStatus('Saving article…');
     try {
       let cover = editing?.cover_image_id || null;
       if (file) {
@@ -107,14 +107,27 @@
       if (result.error) throw new Error('Article could not be saved. Check access, duplicate slug and required fields.');
       dirty = false; editing = null; uploaded = null; $('editor').hidden = true; await load(); status(publish ? 'Article published.' : 'Draft saved.');
     } catch (error) { editorStatus(error.message || 'Unable to save. Please try again.'); }
-    finally { busy = false; $('save-draft').disabled = false; $('publish').disabled = false; }
+    finally { busy = false; form.querySelectorAll('input, textarea, select, button').forEach(el => { el.disabled = false; }); }
   }
   form.addEventListener('input', () => { dirty = true; }); form.addEventListener('change', () => { dirty = true; });
   form.addEventListener('submit', event => { event.preventDefault(); save(false); });
   $('publish').addEventListener('click', () => { if (window.confirm('Publish this article?')) save(true); });
   $('new-article').addEventListener('click', () => openEditor(null));
   $('cancel-edit').addEventListener('click', () => { if (guard()) { dirty = false; $('editor').hidden = true; } });
-  $('preview-button').addEventListener('click', () => { $('preview-title').textContent = form.elements.headline.value; $('preview-summary').textContent = form.elements.summary.value; window.FSBNMarkdown.render($('preview-body'), form.elements.body.value); $('preview').hidden = false; });
+  $('preview-button').addEventListener('click', async () => {
+    $('preview-title').textContent = form.elements.headline.value; $('preview-summary').textContent = form.elements.summary.value;
+    window.FSBNMarkdown.render($('preview-body'), form.elements.body.value); $('preview').hidden = false;
+    if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+    const image = $('preview-image'); const figure = $('preview-figure'); figure.hidden = true;
+    image.alt = form.elements.image_alt_text.value; $('preview-caption').textContent = [form.elements.image_caption.value, form.elements.image_credit.value].filter(Boolean).join(' · ');
+    const file = form.elements.cover_file.files[0];
+    if (file && ['image/jpeg','image/png','image/webp','image/gif'].includes(file.type)) { previewUrl = URL.createObjectURL(file); image.src = previewUrl; figure.hidden = false; }
+    else if (editing?.cover_image_id) {
+      const media = await client.from('media_assets').select('storage_path,external_url').eq('id', editing.cover_image_id).maybeSingle();
+      if (media.data?.storage_path) { const result = await client.storage.from('editorial-media').createSignedUrl(media.data.storage_path, 60); if (result.data?.signedUrl) { image.src = result.data.signedUrl; figure.hidden = false; } }
+      else if (media.data?.external_url?.startsWith('https://')) { image.src = media.data.external_url; figure.hidden = false; }
+    }
+  });
   window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
   window.FSBN_DASHBOARD = { canLeave: guard, stop, async start(c, r, id) { if (active && role === r && userId === id) return; stop(); client = c; role = r; userId = id; active = true; await load(); } };
 })();
